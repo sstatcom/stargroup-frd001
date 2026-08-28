@@ -47,6 +47,12 @@ const helpers_1 = require("./helpers");
             const result = (0, helpers_1.transformDescription)(originalDesc, newDateObj);
             node_assert_1.default.strictEqual(result, "Invoice dated 18-Aug-26 processing");
         });
+        (0, node_test_1.test)("replaces dd- MMM-yy with spaces (e.g. 19- Aug-26 to 18-Aug-26)", () => {
+            const newDateObj = (0, helpers_1.calculateNewDate)("2026-08-19");
+            const originalDesc = "Invoice dated 19- Aug-26 processing";
+            const result = (0, helpers_1.transformDescription)(originalDesc, newDateObj);
+            node_assert_1.default.strictEqual(result, "Invoice dated 18-Aug-26 processing");
+        });
         (0, node_test_1.test)("returns original description unchanged if no date pattern found", () => {
             const newDateObj = (0, helpers_1.calculateNewDate)("2026-08-19");
             const originalDesc = "Regular Description without date";

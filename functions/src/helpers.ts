@@ -68,8 +68,8 @@ export function transformDescription(description: string, newDateDateObject: Dat
   }
 
   const replacementDateStr = formatDateDdMmmYy(newDateDateObject);
-  // Match 2 digits, hyphen, 3 letters (month abbreviation), hyphen, 2 digits
-  const dateRegex = /\b\d{2}-[A-Za-z]{3}-\d{2}\b/gi;
+  // Match 2 digits, hyphen, optional space, 3 letters (month abbreviation), optional space, hyphen, optional space, 2 digits
+  const dateRegex = /\b\d{2}-\s*[A-Za-z]{3}-\s*\d{2}\b/gi;
 
   return description.replace(dateRegex, replacementDateStr);
 }

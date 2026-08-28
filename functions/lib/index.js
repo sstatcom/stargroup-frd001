@@ -38,14 +38,14 @@ const https_1 = require("firebase-functions/v2/https");
 const params_1 = require("firebase-functions/params");
 const logger = __importStar(require("firebase-functions/logger"));
 const helpers_1 = require("./helpers");
-// Define Firebase Secrets for Sage Intacct credentials
+// Step 2: Define Firebase Secrets for Sage Intacct credentials
 const SAGE_CLIENT_ID = (0, params_1.defineSecret)("SAGE_CLIENT_ID");
 const SAGE_CLIENT_SECRET = (0, params_1.defineSecret)("SAGE_CLIENT_SECRET");
 const SAGE_USERNAME = (0, params_1.defineSecret)("SAGE_USERNAME");
 /**
  * Firebase Cloud Function (v2) receiving Sage Intacct webhook POST trigger.
- * Authenticates with Sage Intacct, transforms postingDate & description,
- * and updates the journal entry via PATCH request.
+ * Parses recordno, postingdate, and description, authenticates with Sage Intacct,
+ * queries journal entry lines, transforms date/descriptions, and updates via PATCH.
  */
 exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SAGE_CLIENT_SECRET, SAGE_USERNAME] }, async (req, res) => {
     // Ensure HTTP POST method
@@ -55,41 +55,48 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
         return;
     }
     try {
+        // Step 1: Parse Webhook Input
         const payload = req.body || {};
-        const { recordno, postingDate, description } = payload;
+        const { recordno, postingdate, postingDate, description } = payload;
+        const inputPostingDate = postingdate || postingDate;
         // Validate required inputs
-        if (!recordno || !postingDate || description === undefined) {
-            logger.error("Missing required webhook parameters.", { recordno, postingDate, description });
+        if (!recordno || !inputPostingDate || description === undefined) {
+            logger.error("Missing required webhook parameters.", {
+                recordno,
+                postingdate: inputPostingDate,
+                description
+            });
             res.status(400).json({
-                error: "Invalid request payload. 'recordno', 'postingDate', and 'description' are required."
+                error: "Invalid request payload. 'recordno', 'postingdate', and 'description' are required."
             });
             return;
         }
         logger.info(`Received webhook trigger for recordno: ${recordno}`, {
             recordno,
-            postingDate,
+            postingdate: inputPostingDate,
             description
         });
-        // Retrieve secret values
+        // Step 2: Secrets Management
         const clientId = SAGE_CLIENT_ID.value();
         const clientSecret = SAGE_CLIENT_SECRET.value();
         const username = SAGE_USERNAME.value();
         if (!clientId || !clientSecret || !username) {
             throw new Error("Sage Intacct credentials (CLIENT_ID, CLIENT_SECRET, USERNAME) are missing or undefined in Secrets Manager.");
         }
-        // 1. Authenticate with Sage Intacct to obtain Bearer token
+        // Step 3: Authentication (POST)
         logger.info("Authenticating with Sage Intacct OAuth2 token endpoint...");
+        const authParams = new URLSearchParams({
+            grant_type: "client_credentials",
+            client_id: clientId,
+            client_secret: clientSecret,
+            username: username
+        });
         const tokenResponse = await fetch("https://api.intacct.com/ia/api/v1/oauth2/token", {
             method: "POST",
             headers: {
-                "Content-Type": "application/json"
+                "Content-Type": "application/x-www-form-urlencoded"
             },
-            body: JSON.stringify({
-                grant_type: "client_credentials",
-                client_id: clientId,
-                client_secret: clientSecret,
-                username: username
-            })
+            body: authParams.toString()
         });
         if (!tokenResponse.ok) {
             const errorText = await tokenResponse.text();
@@ -106,17 +113,54 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
             logger.error("Access token missing from Sage Intacct OAuth2 response.", { tokenData });
             throw new Error("Access token missing in Sage Intacct authentication response.");
         }
-        // 2. Perform Data Transformation
-        const newDateObj = (0, helpers_1.calculateNewDate)(postingDate);
+        // Step 4: Data Transformation
+        const newDateObj = (0, helpers_1.calculateNewDate)(inputPostingDate);
         const newPostingDate = (0, helpers_1.formatYYYYMMDD)(newDateObj);
-        const newDescription = (0, helpers_1.transformDescription)(description, newDateObj);
-        logger.info("Transformed record data successfully", {
-            originalPostingDate: postingDate,
+        const newHeaderDescription = (0, helpers_1.transformDescription)(description, newDateObj);
+        logger.info("Transformed header data successfully", {
+            originalPostingDate: inputPostingDate,
             newPostingDate,
             originalDescription: description,
-            newDescription
+            newHeaderDescription
         });
-        // 3. Update Record via PATCH request to Sage Intacct
+        // Step 5: Fetch Journal Lines (NEW)
+        logger.info(`Fetching journal lines for journal entry recordno: ${recordno}`);
+        const queryUrl = "https://api.intacct.com/ia/api/v1/services/core/query";
+        const queryResponse = await fetch(queryUrl, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                object: "general-ledger/journal-entry-line",
+                fields: ["key", "id", "lineNumber", "description"],
+                filters: [
+                    {
+                        "$eq": {
+                            "journalEntry.key": recordno
+                        }
+                    }
+                ],
+                size: 4000
+            })
+        });
+        if (!queryResponse.ok) {
+            const queryErrorText = await queryResponse.text();
+            logger.error("Failed to query journal entry lines.", {
+                recordno,
+                status: queryResponse.status,
+                queryErrorText
+            });
+            throw new Error(`Sage Intacct Query failed with status ${queryResponse.status}: ${queryErrorText}`);
+        }
+        const queryData = (await queryResponse.json());
+        const rawLines = queryData["ia::result"] || [];
+        // Step 6: Update Record (PATCH)
+        const lines = rawLines.map((line) => ({
+            key: line.id,
+            description: (0, helpers_1.transformDescription)(line.description || "", newDateObj)
+        }));
         const patchUrl = `https://api.intacct.com/ia/api/v1/objects/general-ledger/journal-entry/${recordno}`;
         logger.info(`Sending PATCH update to Sage Intacct: ${patchUrl}`);
         const patchResponse = await fetch(patchUrl, {
@@ -127,7 +171,8 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
             },
             body: JSON.stringify({
                 postingDate: newPostingDate,
-                description: newDescription
+                description: newHeaderDescription,
+                lines: lines
             })
         });
         if (!patchResponse.ok) {
@@ -141,14 +186,17 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
         }
         const patchResult = await patchResponse.json().catch(() => ({}));
         logger.info(`Successfully updated journal entry recordno: ${recordno}`, { patchResult });
+        // Step 7: Error Handling & Success Response
         res.status(200).json({
             message: "Journal entry record successfully updated.",
             recordno,
             updatedPostingDate: newPostingDate,
-            updatedDescription: newDescription
+            updatedDescription: newHeaderDescription,
+            updatedLinesCount: lines.length
         });
     }
     catch (error) {
+        // Step 7: Log errors and return 500 status code on failure
         const err = error instanceof Error ? error : new Error(String(error));
         logger.error("stargroupWebhook execution failed.", {
             errorMessage: err.message,

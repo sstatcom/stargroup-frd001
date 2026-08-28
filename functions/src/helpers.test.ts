@@ -58,6 +58,14 @@ describe("Date & Description Helper Functions", () => {
       assert.strictEqual(result, "Invoice dated 18-Aug-26 processing");
     });
 
+    test("replaces dd- MMM-yy with spaces (e.g. 19- Aug-26 to 18-Aug-26)", () => {
+      const newDateObj = calculateNewDate("2026-08-19");
+      const originalDesc = "Invoice dated 19- Aug-26 processing";
+      const result = transformDescription(originalDesc, newDateObj);
+
+      assert.strictEqual(result, "Invoice dated 18-Aug-26 processing");
+    });
+
     test("returns original description unchanged if no date pattern found", () => {
       const newDateObj = calculateNewDate("2026-08-19");
       const originalDesc = "Regular Description without date";
