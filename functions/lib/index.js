@@ -43,6 +43,44 @@ const SAGE_CLIENT_ID = (0, params_1.defineSecret)("SAGE_CLIENT_ID");
 const SAGE_CLIENT_SECRET = (0, params_1.defineSecret)("SAGE_CLIENT_SECRET");
 const SAGE_USERNAME = (0, params_1.defineSecret)("SAGE_USERNAME");
 /**
+ * Helper function to send an audit log entry to Sage Intacct.
+ *
+ * @param accessToken Sage Intacct OAuth2 access token
+ * @param state "success" or "fail" process state
+ * @param message Summary message for the audit log entry
+ */
+async function writeAuditLog(accessToken, state, message) {
+    try {
+        const auditUrl = "https://api.intacct.com/ia/api/v1/objects/platform-apps/nsp::gl_date_update_audit_log";
+        const response = await fetch(auditUrl, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                process_state: state,
+                message: message
+            })
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            logger.error("Sage Intacct audit log request failed.", {
+                status: response.status,
+                statusText: response.statusText,
+                errorText
+            });
+        }
+    }
+    catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.error("Failed to execute writeAuditLog.", {
+            errorMessage: err.message,
+            stack: err.stack
+        });
+    }
+}
+/**
  * Firebase Cloud Function (v2) receiving Sage Intacct webhook POST trigger.
  * Parses recordno, postingdate, and description, authenticates with Sage Intacct,
  * queries journal entry lines, transforms date/descriptions, and updates via PATCH.
@@ -54,6 +92,7 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
         res.status(405).send("Method Not Allowed. Please send a POST request.");
         return;
     }
+    let accessToken;
     try {
         // Step 1: Parse Webhook Input
         const payload = req.body || {};
@@ -108,7 +147,7 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
             throw new Error(`Sage Intacct Authentication failed with status ${tokenResponse.status}: ${errorText}`);
         }
         const tokenData = (await tokenResponse.json());
-        const accessToken = tokenData.access_token;
+        accessToken = tokenData.access_token;
         if (!accessToken) {
             logger.error("Access token missing from Sage Intacct OAuth2 response.", { tokenData });
             throw new Error("Access token missing in Sage Intacct authentication response.");
@@ -186,9 +225,11 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
         }
         const patchResult = await patchResponse.json().catch(() => ({}));
         logger.info(`Successfully updated journal entry recordno: ${recordno}`, { patchResult });
-        // Step 7: Error Handling & Success Response
+        // Step 7: Audit Logging & Success Response
+        //await writeAuditLog(accessToken, "success", "Journal entry record successfully updated.");
+        await writeAuditLog(accessToken, "success", `Journal entry ${recordno} successfully updated. New description: ${newHeaderDescription}`);
         res.status(200).json({
-            message: "Journal entry record successfully updated.",
+            message: `Journal entry ${recordno} successfully updated. New description: ${newHeaderDescription}`,
             recordno,
             updatedPostingDate: newPostingDate,
             updatedDescription: newHeaderDescription,
@@ -202,6 +243,9 @@ exports.stargroupWebhook = (0, https_1.onRequest)({ secrets: [SAGE_CLIENT_ID, SA
             errorMessage: err.message,
             stack: err.stack
         });
+        if (accessToken) {
+            await writeAuditLog(accessToken, "fail", err.message);
+        }
         res.status(500).json({
             error: "Internal Server Error",
             message: err.message
