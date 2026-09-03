@@ -1,7 +1,8 @@
 {
   "projects": {
     "default": "",
-    "stargroup-1-dev": "stargroup-frd001-gldate"
+    "stargroup-1-dev": "stargroup-frd001-gldate",
+    "stargroup_enzo_prod": "stargroup-frd001-gldat-prod"
   },
   "targets": {},
   "etags": {}
